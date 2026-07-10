@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import logoImg from "./assets/logo.png";
 import paletteImg from "./assets/pal.png";
 
@@ -871,11 +871,16 @@ const STACK_CARDS = WEEK_DATA.filter((d) => d.captured);
 
 const SPRING_EASE = "cubic-bezier(0.34, 1.56, 0.64, 1)";
 
-function CardCarousel({ cards }) {
+const DELETE_THRESHOLD = 100;
+
+function CardCarousel({ cards, onDeleteCard }) {
   const [active, setActive] = useState(0);
+  const [dragX, setDragX] = useState(0);
   const [dragY, setDragY] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const startYRef = useRef(0);
+  const [axisLock, setAxisLock] = useState(null); // 'x' | 'y' | null
+  const [removing, setRemoving] = useState(null); // { day, dir } | null
+  const startRef = useRef({ x: 0, y: 0 });
 
   const cardHeight = 340;
   const step = 88;
@@ -884,35 +889,94 @@ function CardCarousel({ cards }) {
 
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
-  const getY = (e) => (e.touches ? e.touches[0].clientY : e.clientY);
+  const getPoint = (e) => {
+    const p = e.touches ? e.touches[0] : e;
+    return { x: p.clientX, y: p.clientY };
+  };
+
+  useEffect(() => {
+    setActive((a) => clamp(a, 0, Math.max(cards.length - 1, 0)));
+  }, [cards.length]);
 
   const onDown = (e) => {
+    if (removing) return;
     if (e.pointerId != null && e.currentTarget.setPointerCapture) {
-      e.currentTarget.setPointerCapture(e.pointerId);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch (err) {
+        // ignore - pointer id not eligible for capture (e.g. synthetic events)
+      }
     }
     setDragging(true);
-    startYRef.current = getY(e);
+    setAxisLock(null);
+    startRef.current = getPoint(e);
   };
   const onMove = (e) => {
-    if (!dragging) return;
-    const atTop = active === 0;
-    const atBottom = active === cards.length - 1;
-    let d = getY(e) - startYRef.current;
-    if ((atTop && d > 0) || (atBottom && d < 0)) d *= 0.35;
-    setDragY(d);
+    if (!dragging || removing) return;
+    const p = getPoint(e);
+    const dx = p.x - startRef.current.x;
+    const dy = p.y - startRef.current.y;
+
+    let lock = axisLock;
+    if (!lock && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      lock = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+      setAxisLock(lock);
+    }
+
+    if (lock === "x") {
+      setDragX(dx);
+      setDragY(0);
+    } else if (lock === "y") {
+      const atTop = active === 0;
+      const atBottom = active === cards.length - 1;
+      let d = dy;
+      if ((atTop && d > 0) || (atBottom && d < 0)) d *= 0.35;
+      setDragY(d);
+      setDragX(0);
+    }
   };
   const onUp = () => {
     if (!dragging) return;
     setDragging(false);
-    if (dragY > 60) {
+    if (axisLock === "x" && Math.abs(dragX) > DELETE_THRESHOLD) {
+      const dir = dragX > 0 ? 1 : -1;
+      const card = cards[active];
+      setRemoving({ day: card.day, dir });
+      setTimeout(() => {
+        onDeleteCard(card.day);
+        setRemoving(null);
+      }, 260);
+    } else if (axisLock === "y" && dragY > 60) {
       setActive((a) => clamp(a - 1, 0, cards.length - 1));
-    } else if (dragY < -60) {
+    } else if (axisLock === "y" && dragY < -60) {
       setActive((a) => clamp(a + 1, 0, cards.length - 1));
     }
+    setDragX(0);
     setDragY(0);
+    setAxisLock(null);
   };
 
-  const dragOffsetIndex = dragging ? -dragY / step : 0;
+  const dragOffsetIndex = dragging && axisLock === "y" ? -dragY / step : 0;
+
+  if (cards.length === 0) {
+    return (
+      <div
+        style={{
+          height: 420,
+          margin: "8px 0",
+          borderRadius: 28,
+          border: `2px dashed ${hexToRgba(INK, 0.2)}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: 32,
+        }}
+      >
+        <p style={{ ...styles.sub, fontStyle: "italic" }}>모든 사진을 지웠어요. 카메라로 새로운 색을 찾아보세요.</p>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -931,12 +995,29 @@ function CardCarousel({ cards }) {
       onPointerLeave={onUp}
     >
       {cards.map((card, i) => {
+        const isFront = i === active;
+        const isRemoving = removing && removing.day === card.day;
         const offset = clamp(i - active + dragOffsetIndex, -3, 3);
         const absOffset = Math.abs(offset);
         const translateY = offset * step;
         const scale = clamp(1 - absOffset * scaleStep, 0.6, 1);
         const opacity = clamp(1 - absOffset * opacityStep, 0, 1);
         const zIndex = 100 - Math.round(absOffset * 10);
+
+        let transform = `translateY(${translateY}px) scale(${scale})`;
+        let cardOpacity = opacity;
+        let transition = dragging ? "none" : `transform 0.5s ${SPRING_EASE}, opacity 0.4s ease`;
+
+        if (isFront && axisLock === "x" && dragging) {
+          transform = `translate(${dragX}px, 0px) rotate(${dragX / 18}deg) scale(${scale})`;
+          transition = "none";
+        } else if (isRemoving) {
+          transform = `translate(${removing.dir * 460}px, 0px) rotate(${removing.dir * 24}deg) scale(${scale})`;
+          cardOpacity = 0;
+          transition = "transform 0.26s ease-in, opacity 0.26s ease-in";
+        }
+
+        const deleteStrength = isFront ? clamp(Math.abs(dragX) / DELETE_THRESHOLD, 0, 1) : 0;
 
         return (
           <div
@@ -948,13 +1029,40 @@ function CardCarousel({ cards }) {
               top: "50%",
               height: cardHeight,
               marginTop: -cardHeight / 2,
-              zIndex,
-              transform: `translateY(${translateY}px) scale(${scale})`,
-              opacity,
-              transition: dragging ? "none" : `transform 0.5s ${SPRING_EASE}, opacity 0.4s ease`,
+              zIndex: isRemoving ? 200 : zIndex,
+              transform,
+              opacity: cardOpacity,
+              transition,
             }}
           >
             <StackCardFace card={card} />
+            {deleteStrength > 0 && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: 28,
+                  background: `rgba(178, 46, 46, ${deleteStrength * 0.45})`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  pointerEvents: "none",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 800,
+                    color: "#fff",
+                    letterSpacing: 0.4,
+                    opacity: deleteStrength,
+                    textShadow: "0 1px 3px rgba(0,0,0,0.35)",
+                  }}
+                >
+                  놓으면 삭제돼요
+                </span>
+              </div>
+            )}
           </div>
         );
       })}
@@ -963,6 +1071,12 @@ function CardCarousel({ cards }) {
 }
 
 function PaletteScreen({ today }) {
+  const [cards, setCards] = useState(STACK_CARDS);
+
+  const handleDeleteCard = (day) => {
+    setCards((prev) => prev.filter((c) => c.day !== day));
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
       <div>
@@ -972,7 +1086,7 @@ function PaletteScreen({ today }) {
 
       <GradientBar today={today} />
 
-      <CardCarousel cards={STACK_CARDS} />
+      <CardCarousel cards={cards} onDeleteCard={handleDeleteCard} />
     </div>
   );
 }
