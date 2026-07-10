@@ -306,6 +306,10 @@ const fontImport = `
     0%, 100% { transform: translateY(0); opacity: 0.55; }
     50% { transform: translateY(6px); opacity: 1; }
   }
+  @keyframes hueHuntBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
 `;
 
 // ---------- 화면: 스플래시 ----------
@@ -376,6 +380,7 @@ function SplashScreen({ onStart }) {
           cursor: "pointer",
           padding: "10px 24px",
           fontFamily: SANS,
+          animation: "hueHuntBlink 1.8s ease-in-out infinite",
         }}
       >
         Get Started
